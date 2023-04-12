@@ -1,3 +1,6 @@
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use serde_json::Deserializer;
@@ -50,6 +53,14 @@ enum EchoPayload {
     EchoOk { echo: String },
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
+enum GeneratePayload {
+    Generate,
+    GenerateOk { id: u64 },
+}
+
 struct TrailingLineSerializer<W>
 where
     W: std::io::Write,
@@ -80,6 +91,7 @@ struct Node<W>
 where
     W: std::io::Write,
 {
+    node_id: String,
     msg_id: usize,
     serializer: TrailingLineSerializer<W>,
 }
@@ -88,18 +100,29 @@ impl<W> Node<W>
 where
     W: std::io::Write,
 {
-    fn new(msg_id: usize, serializer: TrailingLineSerializer<W>) -> Self
+    fn new(node_id: String, msg_id: usize, serializer: TrailingLineSerializer<W>) -> Self
     where
         W: std::io::Write,
     {
-        Self { msg_id, serializer }
+        Self {
+            node_id,
+            msg_id,
+            serializer,
+        }
     }
 
-    fn process(&mut self, msg: Message<EchoPayload>) -> anyhow::Result<()> {
+    fn process(&mut self, msg: Message<GeneratePayload>) -> anyhow::Result<()> {
+        self.serializer
+            .serialize(&msg)
+            .context("failed to serialize msg")?;
         let mut reply = msg.into_reply(self.msg_id);
         match reply.body.payload {
-            EchoPayload::Echo { echo } => {
-                reply.body.payload = EchoPayload::EchoOk { echo };
+            GeneratePayload::Generate => {
+                let mut hasher = DefaultHasher::new();
+                self.node_id.hash(&mut hasher);
+                self.msg_id.hash(&mut hasher);
+                let id = hasher.finish();
+                reply.body.payload = GeneratePayload::GenerateOk { id };
                 self.serializer
                     .serialize(&reply)
                     .context("failed to serialize reply")?;
@@ -124,18 +147,22 @@ fn main() -> anyhow::Result<()> {
         .context("failed to deserialize init message")?;
 
     let mut reply = init_msg.into_reply(1);
+    let InitPayload::Init { node_id, .. } = reply.body.payload else {
+        anyhow::bail!("received unexpected init_ok message")
+    };
     reply.body.payload = InitPayload::InitOk;
     serializer
         .serialize(&reply)
-        .context("failed to send init ok reply")?;
+        .context("failed to send init_ok reply")?;
 
     drop(stream);
     let stdin = std::io::stdin().lock();
-    let stream = Deserializer::from_reader(stdin).into_iter::<Message<EchoPayload>>();
-    let mut node = Node::new(2, serializer);
+    let stream = Deserializer::from_reader(stdin).into_iter::<Message<GeneratePayload>>();
+    let mut node = Node::new(node_id, 2, serializer);
     for msg in stream {
         let message = msg.context("failed to deserialize echo message")?;
-        node.process(message)?;
+        node.process(message)
+            .context("failed in node process function")?;
     }
     Ok(())
 }
