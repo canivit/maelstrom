@@ -87,7 +87,9 @@ where
         msg_id: usize,
         serializer: TrailingLineSerializer<W>,
     ) -> Self;
-    fn process(&mut self, msg: Message<P>) -> anyhow::Result<()>;
+    fn process(self, msg: Message<P>) -> anyhow::Result<Self>
+    where
+        Self: Sized;
 }
 
 pub fn run_node<N, W, R, P>(reader: R, writer: W) -> anyhow::Result<()>
@@ -118,7 +120,7 @@ where
 
     let mut node: N = Node::new(node_id, node_ids, 2, serializer);
     for msg in stream {
-        match msg.context("failed to deserialize message")? {
+        node = match msg.context("failed to deserialize message")? {
             InitOrRequest::Init(_) => anyhow::bail!("received unexpected extra init"),
             InitOrRequest::Request(request) => node
                 .process(request)

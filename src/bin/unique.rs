@@ -38,7 +38,7 @@ where
         }
     }
 
-    fn process(&mut self, msg: Message<GeneratePayload>) -> anyhow::Result<()> {
+    fn process(mut self, msg: Message<GeneratePayload>) -> anyhow::Result<Self> {
         self.serializer
             .serialize(&msg)
             .context("failed to serialize msg")?;
@@ -54,7 +54,7 @@ where
                     .serialize(&reply)
                     .context("failed to serialize reply")?;
                 self.msg_id += 1;
-                Ok(())
+                Ok(self)
             }
             _ => anyhow::bail!("received unexpected echo_ok message"),
         }

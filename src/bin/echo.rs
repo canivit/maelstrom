@@ -31,7 +31,7 @@ where
         Self { msg_id, serializer }
     }
 
-    fn process(&mut self, msg: Message<EchoPayload>) -> anyhow::Result<()> {
+    fn process(mut self, msg: Message<EchoPayload>) -> anyhow::Result<Self> {
         let mut reply = msg.into_reply(self.msg_id);
         match reply.body.payload {
             EchoPayload::Echo { echo } => {
@@ -40,7 +40,7 @@ where
                     .serialize(&reply)
                     .context("failed to serialize echo_ok")?;
                 self.msg_id += 1;
-                Ok(())
+                Ok(self)
             }
             _ => anyhow::bail!("received unexpected echo_ok message"),
         }
