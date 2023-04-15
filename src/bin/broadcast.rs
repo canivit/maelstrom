@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use maelstrom::{run_node, Body, InMessage, MessageSerializer, Node, OutMessage};
 use serde::{Deserialize, Serialize};
 
@@ -35,7 +35,6 @@ where
     W: std::io::Write,
 {
     node_id: String,
-    node_ids: Vec<String>,
     serializer: MessageSerializer<W>,
     store: HashSet<usize>,
     topology: HashMap<String, Vec<String>>,
@@ -45,10 +44,9 @@ impl<W> Node<W, InPayload> for BroadcastNode<W>
 where
     W: std::io::Write,
 {
-    fn new(node_id: String, node_ids: Vec<String>, serializer: MessageSerializer<W>) -> Self {
+    fn new(node_id: String, _node_ids: Vec<String>, serializer: MessageSerializer<W>) -> Self {
         Self {
             node_id,
-            node_ids,
             serializer,
             store: HashSet::new(),
             topology: HashMap::new(),
@@ -57,9 +55,7 @@ where
 
     fn process(&mut self, in_msg: InMessage<InPayload>) -> anyhow::Result<()> {
         match in_msg.body.payload {
-            InPayload::Broadcast { message } => {
-                self.handle_broadcast_msg(&in_msg, message)?;
-            }
+            InPayload::Broadcast { message } => self.handle_broadcast_msg(&in_msg, message),
 
             InPayload::Read => {
                 let payload = OutPayload::ReadOk {
@@ -68,7 +64,7 @@ where
                 let out_msg = in_msg.to_reply(payload);
                 self.serializer
                     .send(out_msg)
-                    .context("failed to serialize read_ok message")?;
+                    .context("failed to serialize read_ok message")
             }
 
             InPayload::Topology { topology } => {
@@ -84,14 +80,11 @@ where
                 };
                 self.serializer
                     .send(out_msg)
-                    .context("failed to serialize topology_ok message")?;
+                    .context("failed to serialize topology_ok message")
             }
 
-            InPayload::Gossip { message } => {
-                self.store.insert(message);
-            }
+            InPayload::Gossip { message } => self.handle_gossip_msg(message),
         }
-        Ok(())
     }
 }
 
@@ -110,8 +103,24 @@ where
         self.serializer
             .send(out_msg)
             .context("failed to serialize broadcast_ok message")?;
+        self.gossip_to_neighbors(message)
+    }
 
-        for neighbor in &self.node_ids {
+    fn handle_gossip_msg(&mut self, message: usize) -> anyhow::Result<()> {
+        let is_new = self.store.insert(message);
+        if is_new {
+            self.gossip_to_neighbors(message)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn gossip_to_neighbors(&mut self, message: usize) -> anyhow::Result<()> {
+        let neighbors = self
+            .topology
+            .get(&self.node_id)
+            .ok_or(anyhow!("topology does not contain self"))?;
+        for neighbor in neighbors {
             let out_msg = OutMessage {
                 src: &self.node_id,
                 dst: neighbor,
