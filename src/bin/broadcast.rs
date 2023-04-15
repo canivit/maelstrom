@@ -1,103 +1,97 @@
 use std::collections::{HashMap, HashSet};
 
 use anyhow::Context;
-use maelstrom::{run_node, Message, Node, TrailingLineSerializer};
+use maelstrom::{run_node, Body, InMessage, MessageSerializer, Node, OutMessage};
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Deserialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
-enum Payload {
+enum InPayload {
     Broadcast {
         message: usize,
     },
-    BroadcastOk,
     Read,
-    ReadOk {
-        messages: HashSet<usize>,
-    },
     Topology {
         topology: HashMap<String, Vec<String>>,
     },
-    TopologyOk,
     Gossip {
         message: usize,
     },
+}
+
+#[derive(Copy, Clone, Serialize)]
+#[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
+enum OutPayload<'a> {
+    BroadcastOk,
+    ReadOk { messages: &'a HashSet<usize> },
+    TopologyOk,
+    Gossip { message: usize },
 }
 
 struct BroadcastNode<W>
 where
     W: std::io::Write,
 {
+    node_id: String,
     node_ids: Vec<String>,
-    msg_id: usize,
-    serializer: TrailingLineSerializer<W>,
+    serializer: MessageSerializer<W>,
     store: HashSet<usize>,
     topology: HashMap<String, Vec<String>>,
 }
 
-impl<W> Node<W, Payload> for BroadcastNode<W>
+impl<W> Node<W, InPayload> for BroadcastNode<W>
 where
     W: std::io::Write,
 {
-    fn new(
-        _node_id: String,
-        node_ids: Vec<String>,
-        msg_id: usize,
-        serializer: TrailingLineSerializer<W>,
-    ) -> Self {
+    fn new(node_id: String, node_ids: Vec<String>, serializer: MessageSerializer<W>) -> Self {
         Self {
+            node_id,
             node_ids,
-            msg_id,
             serializer,
             store: HashSet::new(),
             topology: HashMap::new(),
         }
     }
 
-    fn process(mut self, msg: Message<Payload>) -> anyhow::Result<Self> {
-        self.serializer
-            .serialize(&msg)
-            .context("failed to serialize msg")?;
-        let mut reply = msg.into_reply(self.msg_id);
-        match reply.body.payload {
-            Payload::Broadcast { message } => {
-                self.handle_broadcast(reply, message)?;
+    fn process(&mut self, in_msg: InMessage<InPayload>) -> anyhow::Result<()> {
+        match in_msg.body.payload {
+            InPayload::Broadcast { message } => {
+                self.handle_broadcast_msg(&in_msg, message)?;
             }
 
-            Payload::Read => {
-                reply.body.payload = Payload::ReadOk {
-                    messages: self.store,
+            InPayload::Read => {
+                let payload = OutPayload::ReadOk {
+                    messages: &self.store,
                 };
+                let out_msg = in_msg.to_reply(payload);
                 self.serializer
-                    .serialize(&reply)
+                    .send(out_msg)
                     .context("failed to serialize read_ok message")?;
-                let Payload::ReadOk { messages } = reply.body.payload else {
-                    anyhow::bail!("failed to recover store after move")
-                };
-                self.store = messages;
-                self.msg_id += 1;
             }
 
-            Payload::Topology { topology } => {
+            InPayload::Topology { topology } => {
                 self.topology = topology;
-                reply.body.payload = Payload::TopologyOk;
+                let out_msg = OutMessage {
+                    src: &in_msg.dst,
+                    dst: &in_msg.src,
+                    body: Body {
+                        msg_id: None,
+                        in_reply_to: in_msg.body.msg_id,
+                        payload: OutPayload::TopologyOk,
+                    },
+                };
                 self.serializer
-                    .serialize(&reply)
+                    .send(out_msg)
                     .context("failed to serialize topology_ok message")?;
-                self.msg_id += 1;
             }
 
-            Payload::Gossip { message } => {
+            InPayload::Gossip { message } => {
                 self.store.insert(message);
             }
-
-            Payload::BroadcastOk => anyhow::bail!("received unexpected broadcast_ok message"),
-            Payload::ReadOk { .. } => anyhow::bail!("received unexpected read_ok message"),
-            Payload::TopologyOk => anyhow::bail!("received unexpected topology_ok message"),
         }
-
-        Ok(self)
+        Ok(())
     }
 }
 
@@ -105,27 +99,31 @@ impl<W> BroadcastNode<W>
 where
     W: std::io::Write,
 {
-    fn handle_broadcast(
+    fn handle_broadcast_msg(
         &mut self,
-        mut reply: Message<Payload>,
+        broadcast_msg: &InMessage<InPayload>,
         message: usize,
     ) -> anyhow::Result<()> {
         self.store.insert(message);
 
-        reply.body.payload = Payload::BroadcastOk;
+        let out_msg = broadcast_msg.to_reply(OutPayload::BroadcastOk);
         self.serializer
-            .serialize(&reply)
+            .send(out_msg)
             .context("failed to serialize broadcast_ok message")?;
-        self.msg_id += 1;
 
-        reply.body.payload = Payload::Gossip { message };
         for neighbor in &self.node_ids {
-            reply.dst = neighbor.clone();
-            reply.body.msg_id = self.msg_id;
+            let out_msg = OutMessage {
+                src: &self.node_id,
+                dst: neighbor,
+                body: Body {
+                    msg_id: None,
+                    in_reply_to: None,
+                    payload: OutPayload::Gossip { message },
+                },
+            };
             self.serializer
-                .serialize(&reply)
+                .send(out_msg)
                 .context("failed to serialize gossip message")?;
-            self.msg_id += 1;
         }
         Ok(())
     }

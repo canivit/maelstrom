@@ -1,49 +1,51 @@
 use anyhow::Context;
-use maelstrom::{run_node, Message, Node, TrailingLineSerializer};
+use maelstrom::{run_node, Body, InMessage, MessageSerializer, Node, OutMessage};
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Deserialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
-enum EchoPayload {
+enum InPayload {
     Echo { echo: String },
-    EchoOk { echo: String },
+}
+
+#[derive(Copy, Clone, Serialize)]
+#[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
+enum OutPayload<'a> {
+    EchoOk { echo: &'a str },
 }
 
 struct EchoNode<W>
 where
     W: std::io::Write,
 {
-    msg_id: usize,
-    serializer: TrailingLineSerializer<W>,
+    serializer: MessageSerializer<W>,
 }
 
-impl<W> Node<W, EchoPayload> for EchoNode<W>
+impl<W> Node<W, InPayload> for EchoNode<W>
 where
     W: std::io::Write,
 {
-    fn new(
-        _node_id: String,
-        _node_ids: Vec<String>,
-        msg_id: usize,
-        serializer: TrailingLineSerializer<W>,
-    ) -> Self {
-        Self { msg_id, serializer }
+    fn new(_node_id: String, _node_ids: Vec<String>, serializer: MessageSerializer<W>) -> Self {
+        Self { serializer }
     }
 
-    fn process(mut self, msg: Message<EchoPayload>) -> anyhow::Result<Self> {
-        let mut reply = msg.into_reply(self.msg_id);
-        match reply.body.payload {
-            EchoPayload::Echo { echo } => {
-                reply.body.payload = EchoPayload::EchoOk { echo };
-                self.serializer
-                    .serialize(&reply)
-                    .context("failed to serialize echo_ok")?;
-                self.msg_id += 1;
-                Ok(self)
-            }
-            _ => anyhow::bail!("received unexpected echo_ok message"),
-        }
+    fn process(&mut self, in_msg: InMessage<InPayload>) -> anyhow::Result<()> {
+        let InPayload::Echo { echo } = in_msg.body.payload;
+        let out_msg = OutMessage {
+            src: &in_msg.dst,
+            dst: &in_msg.src,
+            body: Body {
+                msg_id: None,
+                in_reply_to: in_msg.body.msg_id,
+                payload: OutPayload::EchoOk { echo: &echo },
+            },
+        };
+        self.serializer
+            .send(out_msg)
+            .context("failed to serialize echo_ok")?;
+        Ok(())
     }
 }
 
