@@ -74,7 +74,7 @@ enum InitOrRegular<P> {
 
 pub struct MessageSerializer<W>
 where
-    W: std::io::Write,
+    W: std::io::Write + Send + Sync,
 {
     writer: W,
     msg_id: usize,
@@ -82,7 +82,7 @@ where
 
 impl<W> MessageSerializer<W>
 where
-    W: std::io::Write,
+    W: std::io::Write + Send + Sync,
 {
     pub fn new(writer: W) -> Self {
         Self { writer, msg_id: 1 }
@@ -108,7 +108,7 @@ where
 
 pub trait Node<W, P>
 where
-    W: std::io::Write,
+    W: std::io::Write + Send + Sync + 'static,
     P: DeserializeOwned,
 {
     fn new(node_id: String, node_ids: Vec<String>, serializer: MessageSerializer<W>) -> Self;
@@ -116,12 +116,14 @@ where
     fn process(&mut self, in_msg: InMessage<P>) -> anyhow::Result<()>
     where
         Self: Sized;
+
+    fn shutdown(self) -> anyhow::Result<()>;
 }
 
 pub fn run_node<N, W, R, P>(reader: R, writer: W) -> anyhow::Result<()>
 where
     N: Node<W, P>,
-    W: std::io::Write,
+    W: std::io::Write + Send + Sync + 'static,
     P: DeserializeOwned,
     R: std::io::Read,
 {
@@ -150,5 +152,6 @@ where
                 .context("failed in node process function")?,
         }
     }
-    Ok(())
+    node.shutdown()
+        .context("failed to gracefully shutdown node")
 }

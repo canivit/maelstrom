@@ -20,7 +20,7 @@ enum OutPayload {
 
 struct UniqueNode<W>
 where
-    W: std::io::Write,
+    W: std::io::Write + Send + Sync + 'static,
 {
     node_id: String,
     serializer: MessageSerializer<W>,
@@ -28,7 +28,7 @@ where
 
 impl<W> Node<W, InPayload> for UniqueNode<W>
 where
-    W: std::io::Write,
+    W: std::io::Write + Send + Sync,
 {
     fn new(node_id: String, _node_ids: Vec<String>, serializer: MessageSerializer<W>) -> Self {
         Self {
@@ -49,10 +49,14 @@ where
             .context("failed to serialize reply")?;
         Ok(())
     }
+
+    fn shutdown(self) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 fn main() -> anyhow::Result<()> {
     let reader = std::io::stdin().lock();
-    let writer = std::io::stdout().lock();
+    let writer = std::io::stdout();
     run_node::<UniqueNode<_>, _, _, _>(reader, writer)
 }

@@ -18,14 +18,14 @@ enum OutPayload<'a> {
 
 struct EchoNode<W>
 where
-    W: std::io::Write,
+    W: std::io::Write + Send + Sync + 'static,
 {
     serializer: MessageSerializer<W>,
 }
 
 impl<W> Node<W, InPayload> for EchoNode<W>
 where
-    W: std::io::Write,
+    W: std::io::Write + Send + Sync,
 {
     fn new(_node_id: String, _node_ids: Vec<String>, serializer: MessageSerializer<W>) -> Self {
         Self { serializer }
@@ -47,10 +47,14 @@ where
             .context("failed to serialize echo_ok")?;
         Ok(())
     }
+
+    fn shutdown(self) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 fn main() -> anyhow::Result<()> {
     let reader = std::io::stdin().lock();
-    let writer = std::io::stdout().lock();
+    let writer = std::io::stdout();
     run_node::<EchoNode<_>, _, _, _>(reader, writer)
 }
