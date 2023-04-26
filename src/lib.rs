@@ -1,7 +1,7 @@
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::Deserializer;
+use std::io::{BufRead, BufReader};
 
 #[derive(Deserialize)]
 pub struct InMessage<Payload> {
@@ -42,7 +42,6 @@ impl<T> InMessage<T> {
 #[derive(Copy, Clone, Serialize, Deserialize)]
 pub struct Body<Payload> {
     pub msg_id: Option<usize>,
-    #[serde(default)]
     pub in_reply_to: Option<usize>,
     #[serde(flatten)]
     pub payload: Payload,
@@ -128,14 +127,14 @@ where
     R: std::io::Read,
 {
     let mut sender = MessageSerializer::new(writer);
-    let mut in_stream = Deserializer::from_reader(reader).into_iter::<InitOrRegular<P>>();
+    let mut in_stream = BufReader::new(reader).lines();
 
-    let InitOrRegular::Init(init_msg) = in_stream
+    let line = in_stream
         .next()
-        .ok_or(anyhow::Error::msg("failed to receive init message"))?
-        .context("failed to deserialize init message")? else {
-            anyhow::bail!("received unexpected request before init")
-        };
+        .ok_or_else(|| anyhow!("did not receive init message"))?
+        .context("failed to read init message")?;
+    let init_msg: InMessage<InitPayload> = serde_json::from_str(&line)
+        .with_context(|| format!("failed to deserialize {line:?} into init message"))?;
 
     let init_ok_msg = init_msg.to_reply(InitOkPayload::InitOk);
     sender
@@ -144,13 +143,12 @@ where
 
     let InitPayload::Init { node_id, node_ids } = init_msg.body.payload;
     let mut node: N = Node::new(node_id, node_ids, sender);
-    for msg in in_stream {
-        match msg.context("failed to deserialize message")? {
-            InitOrRegular::Init(_) => anyhow::bail!("received unexpected extra init"),
-            InitOrRegular::Regular(request) => node
-                .process(request)
-                .context("failed in node process function")?,
-        }
+    for line in in_stream {
+        let line = line.context("failed to read the next line from input stream")?;
+        let msg: InMessage<P> = serde_json::from_str(&line)
+            .with_context(|| format!("failed to deserialize {line:?} into message"))?;
+        node.process(msg)
+            .context("failed in node process function")?;
     }
     node.shutdown()
         .context("failed to gracefully shutdown node")
