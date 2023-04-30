@@ -1,5 +1,5 @@
 use anyhow::Context;
-use maelstrom::{run_node, InMessage, MessageSerializer, Node};
+use maelstrom::{run_node, DeconstructedInMessage, InMessage, MessageSerializer, Node};
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -42,10 +42,10 @@ where
         self.node_id.hash(&mut hasher);
         self.serializer.msg_id().hash(&mut hasher);
         let id = hasher.finish();
-        let payload = OutPayload::GenerateOk { id };
-        let out_msg = in_msg.to_reply(payload);
+        let DeconstructedInMessage { partial_in_msg, .. } = in_msg.into();
+        let mut out_msg = partial_in_msg.to_out_msg(OutPayload::GenerateOk { id });
         self.serializer
-            .send(out_msg)
+            .send(&mut out_msg)
             .context("failed to serialize reply")?;
         Ok(())
     }

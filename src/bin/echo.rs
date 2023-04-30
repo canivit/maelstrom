@@ -1,5 +1,5 @@
 use anyhow::Context;
-use maelstrom::{run_node, Body, InMessage, MessageSerializer, Node, OutMessage};
+use maelstrom::{run_node, DeconstructedInMessage, InMessage, MessageSerializer, Node};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
@@ -9,7 +9,7 @@ enum InPayload {
     Echo { echo: String },
 }
 
-#[derive(Copy, Clone, Serialize)]
+#[derive(Serialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
 enum OutPayload<'a> {
@@ -32,18 +32,15 @@ where
     }
 
     fn process(&mut self, in_msg: InMessage<InPayload>) -> anyhow::Result<()> {
-        let InPayload::Echo { echo } = in_msg.body.payload;
-        let out_msg = OutMessage {
-            src: &in_msg.dst,
-            dst: &in_msg.src,
-            body: Body {
-                msg_id: None,
-                in_reply_to: in_msg.body.msg_id,
-                payload: OutPayload::EchoOk { echo: &echo },
-            },
-        };
+        let DeconstructedInMessage {
+            partial_in_msg,
+            in_payload,
+        } = in_msg.into();
+        let InPayload::Echo { echo } = in_payload;
+        let out_payload = OutPayload::EchoOk { echo: &echo };
+        let mut out_msg = partial_in_msg.to_out_msg(out_payload);
         self.serializer
-            .send(out_msg)
+            .send(&mut out_msg)
             .context("failed to serialize echo_ok")?;
         Ok(())
     }

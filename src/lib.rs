@@ -11,35 +11,53 @@ pub struct InMessage<Payload> {
     pub body: Body<Payload>,
 }
 
-#[derive(Copy, Clone, Serialize)]
-pub struct OutMessage<'a, Payload>
-where
-    Payload: Copy,
-{
+pub struct PartialInMessage {
+    pub src: String,
+    pub dst: String,
+    pub msg_id: Option<usize>,
+}
+
+pub struct DeconstructedInMessage<Payload> {
+    pub partial_in_msg: PartialInMessage,
+    pub in_payload: Payload,
+}
+
+impl<Payload> From<InMessage<Payload>> for DeconstructedInMessage<Payload> {
+    fn from(value: InMessage<Payload>) -> Self {
+        Self {
+            partial_in_msg: PartialInMessage {
+                src: value.src,
+                dst: value.dst,
+                msg_id: value.body.msg_id,
+            },
+            in_payload: value.body.payload,
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct OutMessage<'a, Payload> {
     pub src: &'a str,
     #[serde(rename = "dest")]
     pub dst: &'a str,
     pub body: Body<Payload>,
 }
 
-impl<T> InMessage<T> {
-    pub fn to_reply<U>(&self, payload: U) -> OutMessage<U>
-    where
-        U: Copy + Clone,
-    {
+impl PartialInMessage {
+    pub fn to_out_msg<Payload>(&self, payload: Payload) -> OutMessage<Payload> {
         OutMessage {
             src: &self.dst,
             dst: &self.src,
             body: Body {
                 msg_id: None,
-                in_reply_to: self.body.msg_id,
+                in_reply_to: self.msg_id,
                 payload,
             },
         }
     }
 }
 
-#[derive(Copy, Clone, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct Body<Payload> {
     pub msg_id: Option<usize>,
     pub in_reply_to: Option<usize>,
@@ -57,7 +75,7 @@ enum InitPayload {
     },
 }
 
-#[derive(Copy, Clone, Serialize)]
+#[derive(Serialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
 enum InitOkPayload {
@@ -87,12 +105,12 @@ where
         Self { writer, msg_id: 1 }
     }
 
-    pub fn send<T>(&mut self, mut msg: OutMessage<T>) -> anyhow::Result<()>
+    pub fn send<T>(&mut self, msg: &mut OutMessage<T>) -> anyhow::Result<()>
     where
-        T: Copy + Serialize,
+        T: Serialize,
     {
         msg.body.msg_id = Some(self.msg_id);
-        serde_json::to_writer(&mut self.writer, &msg).context("failed to serialize msg")?;
+        serde_json::to_writer(&mut self.writer, msg).context("failed to serialize msg")?;
         self.writer
             .write_all(b"\n")
             .context("failed to write trailing line")?;
@@ -136,12 +154,16 @@ where
     let init_msg: InMessage<InitPayload> = serde_json::from_str(&line)
         .with_context(|| format!("failed to deserialize {line:?} into init message"))?;
 
-    let init_ok_msg = init_msg.to_reply(InitOkPayload::InitOk);
+    let DeconstructedInMessage {
+        partial_in_msg,
+        in_payload: payload,
+    } = init_msg.into();
+    let mut init_ok_msg = partial_in_msg.to_out_msg(InitOkPayload::InitOk);
     sender
-        .send(init_ok_msg)
+        .send(&mut init_ok_msg)
         .context("failed to send init_ok reply")?;
 
-    let InitPayload::Init { node_id, node_ids } = init_msg.body.payload;
+    let InitPayload::Init { node_id, node_ids } = payload;
     let mut node: N = Node::new(node_id, node_ids, sender);
     for line in in_stream {
         let line = line.context("failed to read the next line from input stream")?;

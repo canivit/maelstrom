@@ -5,7 +5,10 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use anyhow::{anyhow, Context};
-use maelstrom::{run_node, Body, InMessage, MessageSerializer, Node, OutMessage};
+use maelstrom::{
+    run_node, Body, DeconstructedInMessage, InMessage, MessageSerializer, Node, OutMessage,
+    PartialInMessage,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
@@ -66,28 +69,16 @@ where
     }
 
     fn process(&mut self, in_msg: InMessage<InPayload>) -> anyhow::Result<()> {
-        match in_msg.body.payload {
-            InPayload::Broadcast { message } => self.handle_broadcast_msg(&in_msg, message),
-            InPayload::Read => {
-                let messages = self.lock_map()?.keys().copied().collect::<Vec<_>>();
-                let payload = OutPayload::ReadOk {
-                    messages: messages.as_slice(),
-                };
-                let out_msg = in_msg.to_reply(payload);
-                self.lock_serializer()?
-                    .send(out_msg)
-                    .context("failed to serialize read_ok message")
-            }
-            InPayload::Topology { topology } => {
-                self.handle_topology_msg(topology, &in_msg.src, &in_msg.dst, in_msg.body.msg_id)
-            }
-            InPayload::Gossip { message } => self.handle_gossip_msg(&in_msg, message),
-            InPayload::GossipOk { message } => {
-                self.lock_map()?.entry(message).and_modify(|set| {
-                    set.insert(in_msg.src);
-                });
-                Ok(())
-            }
+        let DeconstructedInMessage {
+            partial_in_msg,
+            in_payload,
+        } = in_msg.into();
+        match in_payload {
+            InPayload::Broadcast { message } => self.handle_broadcast_msg(partial_in_msg, message),
+            InPayload::Read => self.handle_read_msg(partial_in_msg),
+            InPayload::Topology { topology } => self.handle_topology_msg(partial_in_msg, topology),
+            InPayload::Gossip { message } => self.handle_gossip_msg(partial_in_msg, message),
+            InPayload::GossipOk { message } => self.handle_gossip_ok_msg(partial_in_msg, message),
         }
     }
 
@@ -111,12 +102,12 @@ where
 {
     fn handle_broadcast_msg(
         &mut self,
-        broadcast_msg: &InMessage<InPayload>,
+        partial_in_msg: PartialInMessage,
         message: usize,
     ) -> anyhow::Result<()> {
-        let out_msg = broadcast_msg.to_reply(OutPayload::BroadcastOk);
+        let mut out_msg = partial_in_msg.to_out_msg(OutPayload::BroadcastOk);
         self.lock_serializer()?
-            .send(out_msg)
+            .send(&mut out_msg)
             .context("failed to serialize broadcast_ok message")?;
         {
             let mut map = self.lock_map()?;
@@ -128,15 +119,26 @@ where
         self.gossip_to_neighbors(message)
     }
 
+    fn handle_read_msg(&mut self, partial_in_msg: PartialInMessage) -> anyhow::Result<()> {
+        let messages = self.lock_map()?.keys().copied().collect::<Vec<_>>();
+        let payload = OutPayload::ReadOk {
+            messages: messages.as_slice(),
+        };
+        let mut out_msg = partial_in_msg.to_out_msg(payload);
+        self.lock_serializer()?
+            .send(&mut out_msg)
+            .context("failed to serialize read_ok message")
+    }
+
     fn handle_gossip_msg(
         &mut self,
-        gossip_msg: &InMessage<InPayload>,
+        partial_in_msg: PartialInMessage,
         message: usize,
     ) -> anyhow::Result<()> {
         let payload = OutPayload::GossipOk { message };
-        let out_msg = gossip_msg.to_reply(payload);
+        let mut out_msg = partial_in_msg.to_out_msg(payload);
         self.lock_serializer()?
-            .send(out_msg)
+            .send(&mut out_msg)
             .context("failed to serialize gossip_ok message")?;
         {
             let mut map = self.lock_map()?;
@@ -150,10 +152,8 @@ where
 
     fn handle_topology_msg(
         &mut self,
+        partial_in_msg: PartialInMessage,
         mut topology: HashMap<String, Vec<String>>,
-        msg_src: &str,
-        msg_dst: &str,
-        msg_id: Option<usize>,
     ) -> anyhow::Result<()> {
         self.neighbors = topology
             .remove(&self.node_id)
@@ -169,23 +169,26 @@ where
             replicate_map(node_id, map, serializer, neighbors, rx)
         }));
 
-        let out_msg = OutMessage {
-            src: msg_dst,
-            dst: msg_src,
-            body: Body {
-                msg_id: None,
-                in_reply_to: msg_id,
-                payload: OutPayload::TopologyOk,
-            },
-        };
+        let mut out_msg = partial_in_msg.to_out_msg(OutPayload::TopologyOk);
         self.lock_serializer()?
-            .send(out_msg)
+            .send(&mut out_msg)
             .context("failed to serialize topology_ok message")
+    }
+
+    fn handle_gossip_ok_msg(
+        &mut self,
+        partial_in_msg: PartialInMessage,
+        message: usize,
+    ) -> anyhow::Result<()> {
+        self.lock_map()?.entry(message).and_modify(|set| {
+            set.insert(partial_in_msg.src);
+        });
+        Ok(())
     }
 
     fn gossip_to_neighbors(&mut self, message: usize) -> anyhow::Result<()> {
         for neighbor in &self.neighbors {
-            let out_msg = OutMessage {
+            let mut out_msg = OutMessage {
                 src: &self.node_id,
                 dst: neighbor,
                 body: Body {
@@ -195,7 +198,7 @@ where
                 },
             };
             self.lock_serializer()?
-                .send(out_msg)
+                .send(&mut out_msg)
                 .context("failed to serialize gossip message")?;
         }
         Ok(())
@@ -237,7 +240,7 @@ where
             .try_for_each(|(&message, neighbors)| -> anyhow::Result<()> {
                 let mut missing_neighbors = all_neighbors.difference(neighbors);
                 missing_neighbors.try_for_each(|neighbor| -> anyhow::Result<()> {
-                    let out_msg = OutMessage {
+                    let mut out_msg = OutMessage {
                         src: &node_id,
                         dst: neighbor,
                         body: Body {
@@ -247,7 +250,7 @@ where
                         },
                     };
                     serializer
-                        .send(out_msg)
+                        .send(&mut out_msg)
                         .context("failed to serialize gossip message in gossip thread")
                 })
             })?;
