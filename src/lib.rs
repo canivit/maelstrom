@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Context};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::io::{BufRead, BufReader};
 
 #[derive(Deserialize)]
@@ -63,6 +64,34 @@ pub struct Body<Payload> {
     pub in_reply_to: Option<usize>,
     #[serde(flatten)]
     pub payload: Payload,
+}
+
+pub struct SerializableIterator<'a, T>(Box<RefCell<dyn Iterator<Item = T> + 'a>>)
+where
+    T: Serialize;
+
+impl<'a, T> SerializableIterator<'a, T>
+where
+    T: Serialize,
+{
+    pub fn new<I>(iterator: I) -> Self
+    where
+        I: Iterator<Item = T> + 'a,
+    {
+        Self(Box::new(RefCell::new(iterator)))
+    }
+}
+
+impl<'a, T> Serialize for SerializableIterator<'a, T>
+where
+    T: Serialize,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.collect_seq(self.0.borrow_mut().into_iter())
+    }
 }
 
 #[derive(Deserialize)]

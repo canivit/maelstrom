@@ -1,9 +1,10 @@
 use anyhow::Context;
 use env_logger::Target;
 use log::{info, LevelFilter};
-use maelstrom::{DeconstructedInMessage, MessageSerializer, Node, PartialInMessage};
+use maelstrom::{
+    DeconstructedInMessage, MessageSerializer, Node, PartialInMessage, SerializableIterator,
+};
 use serde::{Deserialize, Serialize};
-use std::cell::RefCell;
 use std::collections::HashMap;
 
 #[derive(Deserialize)]
@@ -26,8 +27,6 @@ enum InPayload {
     },
 }
 
-struct PollIterator<'a>(Box<RefCell<dyn Iterator<Item = [usize; 2]> + 'a>>);
-
 #[derive(Serialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
@@ -38,21 +37,12 @@ enum OutPayload<'a> {
     },
     PollOk {
         #[serde(rename = "msgs")]
-        items: HashMap<String, PollIterator<'a>>,
+        items: HashMap<String, SerializableIterator<'a, [usize; 2]>>,
     },
     CommitOffsetsOk,
     ListCommittedOffsetsOk {
         offsets: HashMap<String, usize>,
     },
-}
-
-impl<'a> serde::Serialize for PollIterator<'a> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.collect_seq(self.0.borrow_mut().into_iter())
-    }
 }
 
 struct LogManager {
@@ -72,11 +62,11 @@ impl LogManager {
         log.send(item)
     }
 
-    fn poll(&self, key: &str, offset: usize) -> PollIterator {
-        PollIterator(match self.map.get(key) {
-            Some(log) => Box::new(RefCell::new(log.poll(offset))),
-            None => Box::new(RefCell::new(std::iter::empty())),
-        })
+    fn poll(&self, key: &str, offset: usize) -> SerializableIterator<[usize; 2]> {
+        match self.map.get(key) {
+            Some(log) => SerializableIterator::new(log.poll(offset)),
+            None => SerializableIterator::new(std::iter::empty()),
+        }
     }
 
     fn commit(&mut self, key: &str, offset: usize) {
@@ -205,7 +195,7 @@ where
         partial_in_msg: PartialInMessage,
         offsets: HashMap<String, usize>,
     ) -> anyhow::Result<()> {
-        let items: HashMap<String, PollIterator> = offsets
+        let items: HashMap<String, SerializableIterator<[usize; 2]>> = offsets
             .into_iter()
             .map(|(key, offset)| {
                 let items = self.log_manager.poll(&key, offset);
