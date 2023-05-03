@@ -27,7 +27,7 @@ impl<W> Node<W, InPayload> for EchoNode<W>
 where
     W: std::io::Write + Send + Sync,
 {
-    fn new(_node_id: String, _node_ids: Vec<String>, serializer: MessageSerializer<W>) -> Self {
+    fn new(_node_id: String, _neighbors: Vec<String>, serializer: MessageSerializer<W>) -> Self {
         Self { serializer }
     }
 

@@ -30,7 +30,7 @@ impl<W> Node<W, InPayload> for UniqueNode<W>
 where
     W: std::io::Write + Send + Sync,
 {
-    fn new(node_id: String, _node_ids: Vec<String>, serializer: MessageSerializer<W>) -> Self {
+    fn new(node_id: String, _neighbors: Vec<String>, serializer: MessageSerializer<W>) -> Self {
         Self {
             node_id,
             serializer,

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
@@ -44,14 +44,12 @@ impl<W> Node<W, InPayload> for CounterNode<W>
 where
     W: std::io::Write + Send + Sync,
 {
-    fn new(node_id: String, node_ids: Vec<String>, serializer: MessageSerializer<W>) -> Self {
+    fn new(node_id: String, neighbors: Vec<String>, serializer: MessageSerializer<W>) -> Self {
         let serializer = Arc::new(Mutex::new(serializer));
         let map = Arc::new(Mutex::new(HashMap::from_iter(vec![(node_id.clone(), 0)])));
         let (tx, rx) = mpsc::channel();
         let handle = {
             let node_id = node_id.clone();
-            let mut neighbors = HashSet::<String>::from_iter(node_ids);
-            neighbors.remove(&node_id);
             let serializer = Arc::clone(&serializer);
             let map = Arc::clone(&map);
             thread::spawn(move || {
@@ -144,7 +142,7 @@ fn broadcast<W>(
     node_id: String,
     map: Arc<Mutex<HashMap<String, usize>>>,
     serializer: Arc<Mutex<MessageSerializer<W>>>,
-    neighbors: HashSet<String>,
+    neighbors: Vec<String>,
     rx: Receiver<bool>,
     sleep_time: Duration,
 ) -> anyhow::Result<()>

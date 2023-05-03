@@ -157,7 +157,7 @@ where
     W: std::io::Write + Send + Sync + 'static,
     P: DeserializeOwned,
 {
-    fn new(node_id: String, node_ids: Vec<String>, serializer: MessageSerializer<W>) -> Self;
+    fn new(node_id: String, neighbors: Vec<String>, serializer: MessageSerializer<W>) -> Self;
 
     fn process(&mut self, in_msg: InMessage<P>) -> anyhow::Result<()>
     where
@@ -193,7 +193,8 @@ where
         .context("failed to send init_ok reply")?;
 
     let InitPayload::Init { node_id, node_ids } = payload;
-    let mut node: N = Node::new(node_id, node_ids, sender);
+    let neighbors: Vec<String> = node_ids.into_iter().filter(|id| id != &node_id).collect();
+    let mut node: N = Node::new(node_id, neighbors, sender);
     for line in in_stream {
         let line = line.context("failed to read the next line from input stream")?;
         let msg: InMessage<P> = serde_json::from_str(&line)
