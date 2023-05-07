@@ -44,6 +44,20 @@ pub struct OutMessage<'a, Payload> {
     pub body: Body<Payload>,
 }
 
+impl<'a, Payload> OutMessage<'a, Payload> {
+    pub fn new(src: &'a str, dst: &'a str, in_reply_to: Option<usize>, payload: Payload) -> Self {
+        Self {
+            src,
+            dst,
+            body: Body {
+                msg_id: None,
+                in_reply_to,
+                payload,
+            },
+        }
+    }
+}
+
 impl PartialInMessage {
     pub fn to_out_msg<Payload>(&self, payload: Payload) -> OutMessage<Payload> {
         OutMessage {
@@ -157,7 +171,7 @@ where
     W: std::io::Write + Send + Sync + 'static,
     P: DeserializeOwned,
 {
-    fn new(node_id: String, neighbors: Vec<String>, serializer: MessageSerializer<W>) -> Self;
+    fn new(node_id: String, node_ids: Vec<String>, serializer: MessageSerializer<W>) -> Self;
 
     fn process(&mut self, in_msg: InMessage<P>) -> anyhow::Result<()>
     where
